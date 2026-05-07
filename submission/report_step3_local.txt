@@ -1,0 +1,19 @@
+Performance Report
+Model: random_forest
+Accuracy: 0.748000
+F1(weighted): 0.747022
+
+Label distribution (train):
+  class_0: 0.368579
+  class_1: 0.435123
+  class_2: 0.196298
+
+Confusion matrix (rows=true, cols=pred):
+  140 31 2
+  44 170 13
+  1 35 64
+
+Per-class precision/recall:
+  class_0: precision=0.756757, recall=0.809249
+  class_1: precision=0.720339, recall=0.748899
+  class_2: precision=0.810127, recall=0.640000

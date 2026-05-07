@@ -2,21 +2,14 @@ name: MLOps Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
-      - 'data/**.dvc'
-      - 'src/**.py'
-      - 'params.yaml'
+      - "data/**.dvc"
+      - "src/**.py"
+      - "params.yaml"
   workflow_dispatch:
 
 jobs:
-
-  # ---------------------------------------------------------------------------
-  # JOB 1 - UNIT TEST
-  # Chay unit tests tren du lieu ao (khong can ket noi cloud storage).
-  # Neu co bat ky test nao that bai, pipeline dung lai o day va khong tien hanh
-  # huan luyen hay trien khai.
-  # ---------------------------------------------------------------------------
   test:
     name: Unit Test
     runs-on: ubuntu-latest
@@ -31,15 +24,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run unit tests
-        # TODO 1: Viet lenh de chay pytest tren thu muc tests/ voi co -v
         run: pytest tests/ -v
 
-
-  # ---------------------------------------------------------------------------
-  # JOB 2 - TRAIN
-  # Xac thuc cloud storage, pull du lieu bang DVC, huan luyen mo hinh, upload artifact.
-  # Chi chay khi Job 1 (Unit Test) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   train:
     name: Train
     needs: test
@@ -54,16 +40,23 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Configure MLflow tracking
+        run: |
+          if [ -n "${{ secrets.DAGSHUB_MLFLOW_TRACKING_URI }}" ]; then
+            echo "MLFLOW_TRACKING_URI=${{ secrets.DAGSHUB_MLFLOW_TRACKING_URI }}" >> "$GITHUB_ENV"
+            echo "MLFLOW_TRACKING_USERNAME=${{ secrets.DAGSHUB_USERNAME }}" >> "$GITHUB_ENV"
+            echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> "$GITHUB_ENV"
+            echo "Using DagsHub MLflow tracking."
+          else
+            echo "MLFLOW_TRACKING_URI=sqlite:///mlflow.db" >> "$GITHUB_ENV"
+            echo "Using local MLflow tracking."
+          fi
+          echo "MLFLOW_ARTIFACT_ROOT=./mlartifacts" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Authenticate to Cloud Storage
-        # TODO 2: Ghi noi dung credentials ra file tam va set bien moi truong xac thuc.
-        # GCP:   echo '${{ secrets.CLOUD_CREDENTIALS }}' > /tmp/sa-key.json
-        #        echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa-key.json" >> $GITHUB_ENV
-        # AWS:   echo "AWS_ACCESS_KEY_ID=..." >> $GITHUB_ENV  (lay tu secrets)
-        #        echo "AWS_SECRET_ACCESS_KEY=..." >> $GITHUB_ENV
-        # Azure: echo "AZURE_STORAGE_CONNECTION_STRING=..." >> $GITHUB_ENV
         run: |
           python - <<'PY'
           import json
@@ -76,18 +69,16 @@ jobs:
           endpoint = creds.get("spaces_endpoint", f"https://{region}.digitaloceanspaces.com")
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
-            fh.write(f"AWS_ACCESS_KEY_ID={access_key}\n")
-            fh.write(f"AWS_SECRET_ACCESS_KEY={secret_key}\n")
-            fh.write(f"AWS_DEFAULT_REGION={region}\n")
-            fh.write(f"SPACES_REGION={region}\n")
-            fh.write(f"SPACES_ENDPOINT={endpoint}\n")
+              fh.write(f"AWS_ACCESS_KEY_ID={access_key}\n")
+              fh.write(f"AWS_SECRET_ACCESS_KEY={secret_key}\n")
+              fh.write(f"AWS_DEFAULT_REGION={region}\n")
+              fh.write(f"SPACES_REGION={region}\n")
+              fh.write(f"SPACES_ENDPOINT={endpoint}\n")
           PY
         env:
           CLOUD_CREDENTIALS: ${{ secrets.CLOUD_CREDENTIALS }}
 
       - name: Pull data with DVC
-        # TODO 3: Pull cac file du lieu can thiet tu cloud storage bang lenh dvc pull.
-        #         Chi pull train_phase1.csv va eval.csv (khong can train_phase2.csv).
         run: |
           if [ -f "data/train_phase1.csv.dvc" ] && [ -f "data/eval.csv.dvc" ]; then
             if [ ! -d ".dvc" ]; then
@@ -106,20 +97,11 @@ jobs:
 
       - name: Read metrics
         id: read_metrics
-        # TODO 4: Doc gia tri "accuracy" tu outputs/metrics.json bang Python inline.
-        #         Set ket qua thanh output "accuracy" de job deploy co the doc.
-        #
-        # Goi y:
-        #   ACC=$(python -c "import json; d=json.load(open('outputs/metrics.json')); print(d['accuracy'])")
-        #   echo "accuracy=$ACC" >> $GITHUB_OUTPUT
         run: |
           ACC=$(python -c "import json; d=json.load(open('outputs/metrics.json', encoding='utf-8')); print(d['accuracy'])")
           echo "accuracy=$ACC" >> "$GITHUB_OUTPUT"
 
       - name: Upload model to Cloud Storage
-        # TODO 5: Su dung cloud SDK de upload models/model.pkl len
-        #         <bucket>/models/latest/model.pkl.
-        #         Ten bucket lay tu secret CLOUD_BUCKET.
         run: |
           python - <<'EOF'
           import os
@@ -143,56 +125,114 @@ jobs:
         env:
           CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
 
-      - name: Save metrics as artifact
+      - name: Save train artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: metrics
-          path: outputs/metrics.json
+          name: train-artifacts
+          path: |
+            outputs/metrics.json
+            outputs/report.txt
 
-
-  # ---------------------------------------------------------------------------
-  # JOB 3 - EVAL
-  # Kiem tra nguong chat luong (accuracy >= 0.70).
-  # Pipeline dung lai o day neu mo hinh chua dat yeu cau.
-  # Chi chay khi Job 2 (Train) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   eval:
     name: Eval
     needs: train
     runs-on: ubuntu-latest
     steps:
+      - name: Authenticate to Cloud Storage
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          creds = json.loads(os.environ["CLOUD_CREDENTIALS"])
+          access_key = creds["aws_access_key_id"]
+          secret_key = creds["aws_secret_access_key"]
+          region = creds["spaces_region"]
+          endpoint = creds.get("spaces_endpoint", f"https://{region}.digitaloceanspaces.com")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"AWS_ACCESS_KEY_ID={access_key}\n")
+              fh.write(f"AWS_SECRET_ACCESS_KEY={secret_key}\n")
+              fh.write(f"AWS_DEFAULT_REGION={region}\n")
+              fh.write(f"SPACES_REGION={region}\n")
+              fh.write(f"SPACES_ENDPOINT={endpoint}\n")
+          PY
+        env:
+          CLOUD_CREDENTIALS: ${{ secrets.CLOUD_CREDENTIALS }}
+
+      - name: Compare with previous deployed model
+        id: rollback_guard
+        env:
+          CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          new_acc = float("${{ needs.train.outputs.accuracy }}")
+          bucket = os.environ["CLOUD_BUCKET"]
+          key = "metrics/latest/metrics.json"
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["SPACES_ENDPOINT"],
+              region_name=os.environ["SPACES_REGION"],
+              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+          )
+
+          should_deploy = True
+          previous_acc = None
+          note = "No previous deployed metrics found. Allow deploy."
+
+          try:
+              resp = s3.get_object(Bucket=bucket, Key=key)
+              old = json.loads(resp["Body"].read().decode("utf-8"))
+              previous_acc = float(old["accuracy"])
+              should_deploy = new_acc >= previous_acc
+              note = f"Compare accuracy: new={new_acc:.4f} vs old={previous_acc:.4f}"
+          except ClientError as e:
+              code = e.response.get("Error", {}).get("Code", "")
+              if code not in {"NoSuchKey", "404"}:
+                  raise
+
+          print(note)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"should_deploy={'true' if should_deploy else 'false'}\n")
+              fh.write(f"previous_accuracy={'' if previous_acc is None else previous_acc}\n")
+          EOF
 
       - name: Check eval gate
-        # TODO 6: Doc accuracy tu output cua job train.
-        #         Neu accuracy < 0.70, ket thuc voi loi ro rang.
-        #         Neu dat nguong, in thong bao va tiep tuc.
-        #
-        # Goi y:
-        #   acc = float("${{ needs.train.outputs.accuracy }}")
-        #   if acc < 0.70:
-        #       raise SystemExit(f"FAILED: accuracy {acc:.4f} < 0.70. Huy deploy.")
-        #   print("PASSED: dang trien khai model.")
         run: |
           python - <<'EOF'
           acc = float("${{ needs.train.outputs.accuracy }}")
           threshold = 0.70
+          should_deploy = "${{ steps.rollback_guard.outputs.should_deploy }}".strip().lower() == "true"
+          prev = "${{ steps.rollback_guard.outputs.previous_accuracy }}".strip()
 
           if acc < threshold:
               raise SystemExit(f"FAILED: accuracy {acc:.4f} < {threshold:.2f}. Huy deploy.")
-          print(f"PASSED: accuracy {acc:.4f} >= {threshold:.2f}. Tiep tuc deploy.")
+
+          if not should_deploy:
+              if prev:
+                  raise SystemExit(f"FAILED: accuracy moi {acc:.4f} < accuracy dang chay {float(prev):.4f}. Huy deploy.")
+              raise SystemExit("FAILED: rollback guard rejected deploy.")
+
+          print(f"PASSED: accuracy {acc:.4f} >= {threshold:.2f} va vuot rollback guard.")
           EOF
 
-
-  # ---------------------------------------------------------------------------
-  # JOB 4 - DEPLOY
-  # Trien khai len VM qua SSH.
-  # Chi chay khi Job 3 (Eval) hoan thanh thanh cong.
-  # ---------------------------------------------------------------------------
   deploy:
     name: Deploy
     needs: eval
     runs-on: ubuntu-latest
     steps:
+      - name: Download train artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: train-artifacts
+          path: outputs
 
       - name: SSH deploy to VM
         uses: appleboy/ssh-action@v1.0.3
@@ -201,16 +241,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            # TODO 7: Restart service mlops-serve tren VM.
-            # TODO 8: Cho server san sang roi goi curl /health de xac nhan.
-            #         Neu health check that bai sau nhieu lan thu, thoat voi exit 1.
-            #
-            # Goi y:
-            #   sudo systemctl restart mlops-serve
-            #   sleep 5
-            #   curl -sf http://localhost:8000/health && echo "Health check passed." || exit 1
             sudo systemctl restart mlops-serve
-
             for i in {1..10}; do
               if curl -sf http://localhost:8000/health > /dev/null; then
                 echo "Health check passed."
@@ -219,6 +250,47 @@ jobs:
               echo "Waiting for service... attempt $i/10"
               sleep 3
             done
-
             echo "Health check failed after 10 attempts."
             exit 1
+
+      - name: Authenticate to Cloud Storage
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          creds = json.loads(os.environ["CLOUD_CREDENTIALS"])
+          access_key = creds["aws_access_key_id"]
+          secret_key = creds["aws_secret_access_key"]
+          region = creds["spaces_region"]
+          endpoint = creds.get("spaces_endpoint", f"https://{region}.digitaloceanspaces.com")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"AWS_ACCESS_KEY_ID={access_key}\n")
+              fh.write(f"AWS_SECRET_ACCESS_KEY={secret_key}\n")
+              fh.write(f"AWS_DEFAULT_REGION={region}\n")
+              fh.write(f"SPACES_REGION={region}\n")
+              fh.write(f"SPACES_ENDPOINT={endpoint}\n")
+          PY
+        env:
+          CLOUD_CREDENTIALS: ${{ secrets.CLOUD_CREDENTIALS }}
+
+      - name: Update deployed metrics
+        env:
+          CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
+        run: |
+          python - <<'EOF'
+          import os
+          import boto3
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["SPACES_ENDPOINT"],
+              region_name=os.environ["SPACES_REGION"],
+              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+          )
+          bucket = os.environ["CLOUD_BUCKET"]
+          s3.upload_file("outputs/metrics.json", bucket, "metrics/latest/metrics.json")
+          print("Updated deployed metrics at metrics/latest/metrics.json")
+          EOF
