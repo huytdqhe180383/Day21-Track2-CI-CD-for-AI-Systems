@@ -4,22 +4,62 @@
 
 Completed items:
 
+- Step 1 local experimentation and MLflow tracking
+- Step 2 CI/CD pipeline with DVC + cloud deploy
 - Step 3 continuous training flow with new data (`add_new_data.py` -> DVC update -> retrain path)
 - Bonus 2: multi-model training support (`random_forest`, `gradient_boosting`, `logistic_regression`)
 - Bonus 3: automatic performance report (`outputs/report.txt`) and artifact upload
 - Bonus 4: rollback guard in CI (compare new accuracy vs currently deployed accuracy in cloud)
 - Bonus 5: label-distribution drift warning + metrics logging to `outputs/metrics.json`
-- Bonus 1 readiness: optional DagsHub MLflow integration in workflow + setup guide
+- Bonus 1 readiness: optional DagsHub MLflow integration in workflow
 
-## 2) Step 3 Verification
+## 2) Step 1 Verification
 
-### 2.1 Data growth
+### 2.1 Training script and experiment tracking
+
+- Implemented `src/train.py` for end-to-end train/eval flow with MLflow logging.
+- Logged params and metrics (`accuracy`, `f1_score`) for each run.
+- Persisted outputs:
+  - `outputs/metrics.json`
+  - `models/model.pkl`
+
+### 2.2 Step 1 results snapshot
+
+- Best local Step 1/Step 2 baseline snapshot (before Step 3 data growth):
+  - accuracy: `0.6900`
+  - f1_score: `0.6893`
+- Evidence:
+  - `submission/metrics_step2_local.json`
+  - `submission/report_step2_local.txt`
+
+## 3) Step 2 Verification
+
+### 3.1 DVC + cloud storage integration
+
+- Initialized DVC and tracked dataset pointers:
+  - `data/train_phase1.csv.dvc`
+  - `data/eval.csv.dvc`
+  - `data/train_phase2.csv.dvc`
+- Configured DVC remote to DigitalOcean Spaces and pushed data.
+
+### 3.2 CI/CD + serving verification
+
+- Workflow implemented at `.github/workflows/mlops.yml` with jobs:
+  - `Unit Test` -> `Train` -> `Eval` -> `Deploy`
+- VM serving service `mlops-serve` configured and healthy:
+  - `/health` returns `{"status":"ok"}`
+- Green reference run for Step 2 pipeline behavior:
+  - `https://github.com/huytdqhe180383/Day21-Track2-CI-CD-for-AI-Systems/actions/runs/25478053051`
+
+## 4) Step 3 Verification
+
+### 4.1 Data growth
 
 - Before: `train_phase1.csv` had `2998` rows.
 - Ran `python add_new_data.py`.
 - After: `train_phase1.csv` has `5996` rows.
 
-### 2.2 DVC versioning and remote push
+### 4.2 DVC versioning and remote push
 
 - Initialized DVC repo and remote (`s3://lab-21/dvc`, endpoint `sgp1.digitaloceanspaces.com`)
 - Added DVC pointers:
@@ -28,7 +68,7 @@ Completed items:
   - `data/train_phase2.csv.dvc`
 - Pushed data to remote with `dvc push`.
 
-### 2.3 GitHub Actions run evidence (Step 3 required)
+### 4.3 GitHub Actions run evidence (Step 3 required)
 
 - Push-triggered workflow run:
   - `https://github.com/huytdqhe180383/Day21-Track2-CI-CD-for-AI-Systems/actions/runs/25500974871`
@@ -39,7 +79,7 @@ Completed items:
   - `Eval`: success
   - `Deploy`: success
 
-### 2.4 Metric comparison table (required by Step 3.6)
+### 4.4 Metric comparison table (required by Step 3.6)
 
 Local measured values:
 
@@ -53,7 +93,7 @@ Evidence files:
 - `submission/metrics_step2_local.json`
 - `submission/metrics_step3_local.json`
 
-## 3) Bonus Task Verification
+## 5) Bonus Task Verification
 
 ### Bonus 1 - DagsHub MLflow tracking
 
@@ -61,8 +101,10 @@ Implemented workflow support and fallback logic:
 
 - If `DAGSHUB_*` secrets exist -> train job logs to DagsHub.
 - If not set -> local MLflow tracking fallback.
-
-Guide created: `submission/dagshub_mlflow_setup.md`.
+- Secrets expected:
+  - `DAGSHUB_MLFLOW_TRACKING_URI`
+  - `DAGSHUB_USERNAME`
+  - `DAGSHUB_TOKEN`
 
 ### Bonus 2 - Multiple algorithms
 
@@ -97,7 +139,7 @@ Implemented in `src/train.py`:
 - Warns if any class ratio `< 0.10`
 - Stores distribution and warnings in `outputs/metrics.json`
 
-## 4) Repo Reorganization and Hygiene
+## 6) Repo Reorganization and Hygiene
 
 Completed:
 
@@ -106,10 +148,9 @@ Completed:
 - Removed leftover temp key file from workspace
 - Added `submission/` deliverables:
   - `report.md`
-  - `dagshub_mlflow_setup.md`
   - metric/report evidence snapshots
 
-## 5) Notes and Known Limits
+## 7) Notes and Known Limits
 
 - On local Python 3.13, full `pip install -r requirements.txt` can fail because `mlflow==2.13.0` pulls `pyarrow<16` (wheel/build compatibility issue). We used the already-installed global env and only updated `pathspec` for DVC compatibility.
 - For final grading screenshots, capture:
