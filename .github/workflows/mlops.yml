@@ -32,7 +32,7 @@ jobs:
 
       - name: Run unit tests
         # TODO 1: Viet lenh de chay pytest tren thu muc tests/ voi co -v
-        run: # <dien lenh o day>
+        run: pytest tests/ -v
 
 
   # ---------------------------------------------------------------------------
@@ -65,12 +65,32 @@ jobs:
         #        echo "AWS_SECRET_ACCESS_KEY=..." >> $GITHUB_ENV
         # Azure: echo "AZURE_STORAGE_CONNECTION_STRING=..." >> $GITHUB_ENV
         run: |
-          # <dien code o day>
+          python - <<'PY'
+          import json
+          import os
+
+          creds = json.loads(os.environ["CLOUD_CREDENTIALS"])
+          access_key = creds["aws_access_key_id"]
+          secret_key = creds["aws_secret_access_key"]
+          region = creds["spaces_region"]
+          endpoint = creds.get("spaces_endpoint", f"https://{region}.digitaloceanspaces.com")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+            fh.write(f"AWS_ACCESS_KEY_ID={access_key}\n")
+            fh.write(f"AWS_SECRET_ACCESS_KEY={secret_key}\n")
+            fh.write(f"AWS_DEFAULT_REGION={region}\n")
+            fh.write(f"SPACES_REGION={region}\n")
+            fh.write(f"SPACES_ENDPOINT={endpoint}\n")
+          PY
+        env:
+          CLOUD_CREDENTIALS: ${{ secrets.CLOUD_CREDENTIALS }}
 
       - name: Pull data with DVC
         # TODO 3: Pull cac file du lieu can thiet tu cloud storage bang lenh dvc pull.
         #         Chi pull train_phase1.csv va eval.csv (khong can train_phase2.csv).
-        run: # <dien lenh o day>
+        run: |
+          dvc remote modify myremote endpointurl "$SPACES_ENDPOINT"
+          dvc pull data/train_phase1.csv.dvc data/eval.csv.dvc
 
       - name: Train model
         run: python src/train.py
@@ -84,7 +104,8 @@ jobs:
         #   ACC=$(python -c "import json; d=json.load(open('outputs/metrics.json')); print(d['accuracy'])")
         #   echo "accuracy=$ACC" >> $GITHUB_OUTPUT
         run: |
-          # <dien code o day>
+          ACC=$(python -c "import json; d=json.load(open('outputs/metrics.json', encoding='utf-8')); print(d['accuracy'])")
+          echo "accuracy=$ACC" >> "$GITHUB_OUTPUT"
 
       - name: Upload model to Cloud Storage
         # TODO 5: Su dung cloud SDK de upload models/model.pkl len
@@ -92,8 +113,26 @@ jobs:
         #         Ten bucket lay tu secret CLOUD_BUCKET.
         run: |
           python - <<'EOF'
-          # <dien code Python o day>
+          import os
+          import boto3
+
+          bucket = os.environ["CLOUD_BUCKET"]
+          endpoint = os.environ["SPACES_ENDPOINT"]
+          region = os.environ["SPACES_REGION"]
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=endpoint,
+              region_name=region,
+              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+          )
+          key = "models/latest/model.pkl"
+          s3.upload_file("models/model.pkl", bucket, key)
+          print(f"Uploaded models/model.pkl -> s3://{bucket}/{key}")
           EOF
+        env:
+          CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
 
       - name: Save metrics as artifact
         uses: actions/upload-artifact@v4
@@ -126,7 +165,12 @@ jobs:
         #   print("PASSED: dang trien khai model.")
         run: |
           python - <<'EOF'
-          # <dien code Python o day>
+          acc = float("${{ needs.train.outputs.accuracy }}")
+          threshold = 0.70
+
+          if acc < threshold:
+              raise SystemExit(f"FAILED: accuracy {acc:.4f} < {threshold:.2f}. Huy deploy.")
+          print(f"PASSED: accuracy {acc:.4f} >= {threshold:.2f}. Tiep tuc deploy.")
           EOF
 
 
@@ -156,4 +200,16 @@ jobs:
             #   sudo systemctl restart mlops-serve
             #   sleep 5
             #   curl -sf http://localhost:8000/health && echo "Health check passed." || exit 1
-            # <dien lenh bash o day>
+            sudo systemctl restart mlops-serve
+
+            for i in {1..10}; do
+              if curl -sf http://localhost:8000/health > /dev/null; then
+                echo "Health check passed."
+                exit 0
+              fi
+              echo "Waiting for service... attempt $i/10"
+              sleep 3
+            done
+
+            echo "Health check failed after 10 attempts."
+            exit 1
