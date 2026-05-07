@@ -28,7 +28,18 @@ Completed items:
   - `data/train_phase2.csv.dvc`
 - Pushed data to remote with `dvc push`.
 
-### 2.3 Metric comparison table (required by Step 3.6)
+### 2.3 GitHub Actions run evidence (Step 3 required)
+
+- Push-triggered workflow run:
+  - `https://github.com/huytdqhe180383/Day21-Track2-CI-CD-for-AI-Systems/actions/runs/25500974871`
+- Run status: `success`
+- Jobs:
+  - `Unit Test`: success
+  - `Train`: success
+  - `Eval`: success
+  - `Deploy`: success
+
+### 2.4 Metric comparison table (required by Step 3.6)
 
 Local measured values:
 
